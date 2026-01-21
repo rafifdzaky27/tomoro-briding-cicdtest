@@ -146,6 +146,9 @@ jobs:
             # Set image tag and pull
             export IMAGE_TAG="$IMAGE_TAG"
             export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
+            export ENVIRONMENT="staging"
+            export WEB_PORT="3001"
+            export DB_PORT="5433"
             
             # Force cleanup existing containers/networks/volumes
             docker-compose down -v --remove-orphans || true
@@ -272,6 +275,9 @@ jobs:
             # Set image tag and pull
             export IMAGE_TAG="$IMAGE_TAG"
             export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
+            export ENVIRONMENT="production"
+            export WEB_PORT="3000"
+            export DB_PORT="5432"
             
             # Force cleanup existing containers/networks/volumes
             docker-compose down -v --remove-orphans || true
