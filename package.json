@@ -29,10 +29,10 @@
     "@types/pg": "^8.16.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/xlsx": "^0.0.35",
+    "@types/xlsx": "^0.0.36",
     "eslint": "^9",
     "eslint-config-next": "16.0.5",
-    "next-openapi-gen": "^0.9.1",
+    "next-openapi-gen": "^0.9.4",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
