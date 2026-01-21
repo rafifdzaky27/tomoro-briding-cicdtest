@@ -7,5 +7,23 @@ services:
     ports:
       - "3000:3000"
     env_file:
-      - .env     # kalau kamu punya file .env di root
+      - .env
     restart: always
+    depends_on:
+      - db
+
+  db:
+    container_name: tomoro-db
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+volumes:
+  postgres_data:

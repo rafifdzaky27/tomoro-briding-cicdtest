@@ -28,14 +28,21 @@ export async function POST(req: Request) {
 
     const user = result.rows[0];
 
+    console.log("Login attempt for:", email);
+    console.log("User found:", user ? "YES" : "NO");
+
     if (!user) {
+      console.log("User not found in DB");
       return NextResponse.json(
         { message: "Email atau password salah." },
         { status: 401 }
       );
     }
 
+    console.log("Stored hash:", user.password);
+    console.log("Input password:", password);
     const isMatch = await bcrypt.compare(password, user.password);
+    console.log("Password match result:", isMatch);
 
     if (!isMatch) {
       return NextResponse.json(

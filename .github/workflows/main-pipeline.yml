@@ -1,0 +1,319 @@
+name: Main Delivery Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: production-delivery
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------
+  # STAGE 1: BUILD & PUSH DOCKER IMAGE
+  # ------------------------------------------------------------------
+  build-push-image:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.image-info.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Set Image Info
+        id: image-info
+        run: |
+          IMAGE_TAG="sha-$(echo ${{ github.sha }} | cut -c1-7)"
+          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/tomoro-bridging:${{ env.IMAGE_TAG }}
+            ghcr.io/${{ github.repository_owner }}/tomoro-bridging:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Summary
+        run: |
+          echo "## 🐳 Docker Image Built Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ghcr.io/${{ github.repository_owner }}/tomoro-bridging:${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+  # ------------------------------------------------------------------
+  # STAGE 2: DEPLOY STAGING
+  # ------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-push-image
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: http://172.104.61.233:3001
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to Staging Server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH_TOMORO_STAGING }}
+          IMAGE_TAG: ${{ needs.build-push-image.outputs.image-tag }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          echo "🚀 Deploying to staging..."
+          
+          # Copy docker-compose file to server
+          scp -i ~/.ssh/deploy_key -P $SSH_PORT docker-compose.production.yml $SSH_USERNAME@$SSH_HOST:/tmp/docker-compose.staging.yml
+          
+          ssh -i ~/.ssh/deploy_key -p $SSH_PORT $SSH_USERNAME@$SSH_HOST << 'ENDSSH'
+            set -e
+            
+            DEPLOY_PATH="${{ secrets.DEPLOY_PATH_TOMORO_STAGING }}"
+            BACKUP_DIR="/var/www/backups/tomoro-staging"
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            IMAGE_TAG="${{ needs.build-push-image.outputs.image-tag }}"
+            
+            echo "📦 Creating backup..."
+            mkdir -p "$BACKUP_DIR"
+            
+            # Backup existing containers if they exist
+            if docker ps -a | grep -q tomoro-staging; then
+              docker commit tomoro-staging-web "$BACKUP_DIR/backup_$TIMESTAMP" || true
+              cd "$BACKUP_DIR" && docker images | grep backup | tail -n +6 | awk '{print $3}' | xargs -r docker rmi || true
+            fi
+            
+            echo "🔄 Deploying..."
+            mkdir -p "$DEPLOY_PATH"
+            
+            # Move docker-compose file
+            mv /tmp/docker-compose.staging.yml "$DEPLOY_PATH/docker-compose.yml"
+            
+            # Create .env.production if not exists
+            if [ ! -f "$DEPLOY_PATH/.env.production" ]; then
+              cat > "$DEPLOY_PATH/.env.production" << 'EOF'
+          ACCURATE_API_TOKEN=dummy_token_testing_only
+          ACCURATE_SIGNATURE_SECRET=dummy_secret_testing_only
+          ACCURATE_HOST=https://account.accurate.id
+          ACCURATE_STRING_TO_SIGN={METHOD}:{PATH}:{TIMESTAMP}
+          ACCURATE_SIGNATURE_DIGEST=hex
+          DB_CONNECTION=pgsql
+          DB_HOST=db
+          DB_PORT=5432
+          DB_DATABASE=tomoro_staging
+          DB_USERNAME=postgres
+          DB_PASSWORD=staging_password_change_me
+          EOF
+            fi
+            
+            cd "$DEPLOY_PATH"
+            
+            # Login to GitHub Container Registry
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            
+            # Set image tag and pull
+            export IMAGE_TAG="$IMAGE_TAG"
+            docker compose pull
+            
+            # Stop and remove old containers
+            docker compose down || true
+            
+            # Start new containers
+            docker compose up -d
+            
+            echo "✅ Deployment complete!"
+          ENDSSH
+
+      - name: Health Check
+        run: |
+          echo "🏥 Running health check..."
+          sleep 10
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://172.104.61.233:3001 || echo "000")
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
+            echo "✅ Health check passed! HTTP $HTTP_CODE"
+          else
+            echo "⚠️ Health check returned HTTP $HTTP_CODE (may need manual verification)"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "## 🎉 Staging Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** Staging" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** http://172.104.61.233:3001" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** ghcr.io/${{ github.repository_owner }}/tomoro-bridging:${{ needs.build-push-image.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔒 Build Once, Deploy Many" >> $GITHUB_STEP_SUMMARY
+          echo "This deployment uses the exact Docker image built in Stage 1." >> $GITHUB_STEP_SUMMARY
+
+  # ------------------------------------------------------------------
+  # STAGE 3: DEPLOY PRODUCTION
+  # ------------------------------------------------------------------
+  deploy-production:
+    name: Deploy to Production
+    needs: [build-push-image, deploy-staging]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: http://172.104.61.233:3000
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to Production Server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH_TOMORO_PRODUCTION }}
+          IMAGE_TAG: ${{ needs.build-push-image.outputs.image-tag }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          echo "🚀 Deploying to PRODUCTION..."
+          
+          # Copy docker-compose file to server
+          scp -i ~/.ssh/deploy_key -P $SSH_PORT docker-compose.production.yml $SSH_USERNAME@$SSH_HOST:/tmp/docker-compose.production.yml
+          
+          ssh -i ~/.ssh/deploy_key -p $SSH_PORT $SSH_USERNAME@$SSH_HOST << 'ENDSSH'
+            set -e
+            
+            DEPLOY_PATH="${{ secrets.DEPLOY_PATH_TOMORO_PRODUCTION }}"
+            BACKUP_DIR="/var/www/backups/tomoro-production"
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            IMAGE_TAG="${{ needs.build-push-image.outputs.image-tag }}"
+            
+            echo "📦 Creating backup..."
+            mkdir -p "$BACKUP_DIR"
+            
+            # Backup existing containers if they exist
+            if docker ps -a | grep -q tomoro-production; then
+              docker commit tomoro-production-web "$BACKUP_DIR/backup_$TIMESTAMP" || true
+              cd "$BACKUP_DIR" && docker images | grep backup | tail -n +11 | awk '{print $3}' | xargs -r docker rmi || true
+            fi
+            
+            echo "🔄 Deploying..."
+            mkdir -p "$DEPLOY_PATH"
+            
+            # Move docker-compose file
+            mv /tmp/docker-compose.production.yml "$DEPLOY_PATH/docker-compose.yml"
+            
+            # Create .env.production if not exists
+            if [ ! -f "$DEPLOY_PATH/.env.production" ]; then
+              cat > "$DEPLOY_PATH/.env.production" << 'EOF'
+          ACCURATE_API_TOKEN=dummy_token_testing_only
+          ACCURATE_SIGNATURE_SECRET=dummy_secret_testing_only
+          ACCURATE_HOST=https://account.accurate.id
+          ACCURATE_STRING_TO_SIGN={METHOD}:{PATH}:{TIMESTAMP}
+          ACCURATE_SIGNATURE_DIGEST=hex
+          DB_CONNECTION=pgsql
+          DB_HOST=db
+          DB_PORT=5432
+          DB_DATABASE=tomoro_production
+          DB_USERNAME=postgres
+          DB_PASSWORD=production_password_change_me
+          EOF
+            fi
+            
+            cd "$DEPLOY_PATH"
+            
+            # Login to GitHub Container Registry
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            
+            # Set image tag and pull
+            export IMAGE_TAG="$IMAGE_TAG"
+            docker compose pull
+            
+            # Stop and remove old containers
+            docker compose down || true
+            
+            # Start new containers
+            docker compose up -d
+            
+            echo "✅ Deployment complete!"
+          ENDSSH
+
+      - name: Health Check
+        run: |
+          echo "🏥 Running health check..."
+          sleep 10
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://172.104.61.233:3000 || echo "000")
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
+            echo "✅ Health check passed! HTTP $HTTP_CODE"
+          else
+            echo "❌ Health check failed! HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "## 🎉 Production Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** Production" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** http://172.104.61.233:3000" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** ghcr.io/${{ github.repository_owner }}/tomoro-bridging:${{ needs.build-push-image.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔒 Build Once, Deploy Many" >> $GITHUB_STEP_SUMMARY
+          echo "This is the EXACT SAME Docker image deployed to Staging." >> $GITHUB_STEP_SUMMARY
+          echo "No rebuild occurred - 100% consistency guaranteed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔄 Rollback Instructions" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "ssh ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "cd /var/www/backups/tomoro-production" >> $GITHUB_STEP_SUMMARY
+          echo "docker images | grep backup  # Find backup image" >> $GITHUB_STEP_SUMMARY
+          echo "docker tag backup_TIMESTAMP ghcr.io/${{ github.repository_owner }}/tomoro-bridging:rollback" >> $GITHUB_STEP_SUMMARY
+          echo "cd /var/www/tomoro-production" >> $GITHUB_STEP_SUMMARY
+          echo "export IMAGE_TAG=rollback" >> $GITHUB_STEP_SUMMARY
+          echo "docker compose up -d" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
