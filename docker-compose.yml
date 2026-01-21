@@ -1,0 +1,11 @@
+services:
+  web:
+    container_name: fe-tomoro-ui
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env     # kalau kamu punya file .env di root
+    restart: always
