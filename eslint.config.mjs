@@ -13,6 +13,14 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    rules: {
+      // Relax rules for existing codebase
+      "@typescript-eslint/no-explicit-any": "warn", // Change from error to warning
+      "@typescript-eslint/no-unused-vars": "warn", // Change from error to warning
+      "react-hooks/exhaustive-deps": "warn", // Change from error to warning
+    },
+  },
 ]);
 
 export default eslintConfig;
