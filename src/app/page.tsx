@@ -5,7 +5,7 @@ export default function LandingPage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center px-4">
       <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
-        Bridging Tomoro
+        Bridging Tomorapip
       </h1>
 
       <p className="mt-3 text-sm text-slate-600">
