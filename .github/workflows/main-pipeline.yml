@@ -145,6 +145,7 @@ jobs:
             
             # Set image tag and pull
             export IMAGE_TAG="$IMAGE_TAG"
+            export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
             docker-compose pull
             
             # Stop and remove old containers
@@ -266,6 +267,7 @@ jobs:
             
             # Set image tag and pull
             export IMAGE_TAG="$IMAGE_TAG"
+            export GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}"
             docker-compose pull
             
             # Stop and remove old containers
