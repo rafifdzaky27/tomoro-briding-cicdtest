@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@scalar/api-reference-react": "^0.8.15",
-    "@supabase/supabase-js": "^2.86.0",
+    "@supabase/supabase-js": "^2.91.1",
     "@types/bcryptjs": "^2.4.6",
     "ajv": "^8.17.1",
     "bcryptjs": "^3.0.3",
