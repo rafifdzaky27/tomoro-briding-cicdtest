@@ -10,7 +10,7 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@scalar/api-reference-react": "^0.8.15",
+    "@scalar/api-reference-react": "^0.8.34",
     "@supabase/supabase-js": "^2.86.0",
     "@types/bcryptjs": "^2.4.6",
     "ajv": "^8.17.1",
